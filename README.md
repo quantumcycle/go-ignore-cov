@@ -16,6 +16,12 @@ Using `go-ignore-cov`, you can flag the part of your code that you want to ignor
 
 What if you want to start using this on a existing codebase, how can you enforce 100% coverage? It's actually very easy. You can just add the `//coverage:ignore file` instruction at the top of every file in your project, and boom, you're at 100% coverage. Then you slowly start removing the `file` instructions and replacing them with `//coverage:ignore` statements on specific code blocks instead, still maintaining 100% coverage.
 
+## Installation
+
+```
+go install github.com/hexira/go-ignore-cov@latest
+```
+
 ## Using `go-ignore-cov`
 
 This is a CLI tool with just a few options.
