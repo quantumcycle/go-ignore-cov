@@ -1,4 +1,9 @@
+name: CI
+
 on:
+  push:
+    branches:
+      - main
   pull_request:
   
 jobs:
@@ -24,15 +29,15 @@ jobs:
             go test ./... -coverprofile coverage.out -covermode count
             ./go-ignore-cov --file coverage.out
 
-    - name: Quality Gate - Test coverage shall 100%
+    - name: Quality Gate - Test coverage shall 100.0 %
       env:
-          TESTCOVERAGE_THRESHOLD: 100
+          TESTCOVERAGE_THRESHOLD: "100.0"
       run: |
             echo "Quality Gate: checking test coverage is above threshold ..."
             echo "Threshold             : $TESTCOVERAGE_THRESHOLD %"
             totalCoverage=`go tool cover -func=coverage.out | grep total | grep -Eo '[0-9]+\.[0-9]+'`
             echo "Current test coverage : $totalCoverage %"
-            if (( $(echo "$totalCoverage $TESTCOVERAGE_THRESHOLD" | awk '{print ($1 > $2)}') )); then
+            if (( $(echo "$totalCoverage $TESTCOVERAGE_THRESHOLD" | awk '{print ($1 >= $2)}') )); then
                 echo "OK"
             else
                 echo "Current test coverage is below threshold. Please add more unit tests or adjust threshold to a lower value."
