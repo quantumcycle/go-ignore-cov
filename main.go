@@ -178,9 +178,16 @@ func writeProfiles(profiles []*cover.Profile, w io.Writer) {
 }
 
 func main() {
+	cli.VersionFlag = &cli.BoolFlag{
+		Name:    "print-version",
+		Aliases: []string{"V"},
+		Usage:   "print only the version",
+	}
+
 	app := &cli.App{
-		Name:  "go-ignore-cov",
-		Usage: "Remove ignored code from codebase from a golang coverage output file",
+		Name:    "go-ignore-cov",
+		Version: "0.2.0",
+		Usage:   "Remove ignored code from codebase from a golang coverage output file",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:     "file",

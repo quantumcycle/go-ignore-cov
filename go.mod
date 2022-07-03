@@ -1,4 +1,4 @@
-module github.com/matdurand/go-ignore-cov
+module github.com/hexira/go-ignore-cov
 
 go 1.18
 
