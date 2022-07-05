@@ -98,3 +98,7 @@ The block in which you put the ignore instruction is completely ignored.
 ### ignoring a whole file
 
 You can also ignore a whole file using `//coverage:ignore file`. You can put the comment anywhere in the file, but usually the first line is best for readability.
+
+## Caveats
+
+When using `go tool cover -func=coverage.out` to see the functions coverage, it will display all the functions in the scanned packages. If you add ignore statement to some functions, they will display 0% coverage when running `go tool cover`, but the 0% won't be used to calculate the total, so if you grep on the total like in the example above, you can still get 100%.
