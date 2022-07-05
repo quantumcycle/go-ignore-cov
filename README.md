@@ -29,7 +29,7 @@ This is a CLI tool with just a few options.
 Here is an example of how to run this from your module root folder:
 ```
 # Run test and output coverage
-go test -coverprofile coverage.out -covermode count -v ./... 
+go test -coverprofile coverage.out -covermode count -coverpkg=./... -v ./... 
 
 # Filter coverage output from source code ignore instructions
 go-ignore-cov --file coverage.out

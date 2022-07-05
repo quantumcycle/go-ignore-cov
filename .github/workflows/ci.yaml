@@ -26,7 +26,7 @@ jobs:
 
     - name: Unit tests
       run: |
-            go test ./... -coverprofile coverage.out -covermode count
+            go test -coverprofile coverage.out -covermode count -coverpkg=./... -v ./...
             ./go-ignore-cov --file coverage.out
 
     - name: Quality Gate - Test coverage shall 100.0 %

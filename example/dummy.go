@@ -1,17 +1,15 @@
 package example
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/hexira/go-ignore-cov/example/hello"
+)
 
 //this package should have 100% code coverage if we remove the ignored statements
-
-func sayHello() (error, bool) {
-	fmt.Println("Hello")
-	return nil, true
-}
-
 func MaybeSayHello() {
 	fmt.Println("Maybe Maybe Maybe")
-	if err, ok := sayHello(); err != nil && ok {
+	if err, ok := hello.SayHello(); err != nil && ok {
 		// coverage:ignore
 		fmt.Println("BOOM")
 	}
