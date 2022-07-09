@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/urfave/cli/v2"
@@ -32,13 +33,17 @@ type Instruction interface {
 }
 
 type IgnoreBlock struct {
-	LineNumber int
+	Line int
+	Col int
 }
 
 func (ig IgnoreBlock) UpdateProfile(profile *cover.Profile, verbose bool) {
 	newBlocks := []cover.ProfileBlock{}
+	igPos,_ := strconv.Atoi(fmt.Sprintf("%d%05d",ig.Line, ig.Col))
 	for _, block := range profile.Blocks {
-		if block.StartLine < ig.LineNumber && block.EndLine >= ig.LineNumber {
+		blockStart, _ := strconv.Atoi(fmt.Sprintf("%d%05d",block.StartLine, block.StartCol))
+		blockEnd, _ := strconv.Atoi(fmt.Sprintf("%d%05d",block.EndLine, block.EndCol))
+		if igPos >= blockStart && igPos < blockEnd {
 			//whole block inside the ignore zone, just ignore it
 			if verbose {
 				fmt.Printf("Removing coverage block [%d.%d] => [%d.%d] for %s\n",
@@ -92,17 +97,25 @@ func readInstructionsFromSourceFile(path string) ([]Instruction, error) {
 	defer source.Close()
 	scanner := bufio.NewScanner(source)
 	lineNumber := 1
+	pendingBlockInstruction := ""
 	for scanner.Scan() {
 		lineTxt := scanner.Text()
 		if instruction, ok := getInstructionFromLine(lineTxt); ok {
 			if instruction == InstructionFile {
 				instructions = append(instructions, IgnoreFile{})
 			} else if instruction == InstructionBlock {
-				instructions = append(instructions, IgnoreBlock{
-					LineNumber: lineNumber + 1,
-				})
+				pendingBlockInstruction = instruction
 			} else {
 				return nil, fmt.Errorf("Unexpected ignore instruction [%s] at line %d in file [%s]", instruction, lineNumber, path)
+			}
+		} else {
+			if pendingBlockInstruction != "" {
+				colStart := len(lineTxt) - len(strings.TrimLeft(lineTxt, "\t ")) + 1
+				instructions = append(instructions, IgnoreBlock{
+					Line: lineNumber,
+					Col: colStart,
+				})
+				pendingBlockInstruction = ""
 			}
 		}
 		lineNumber++
@@ -187,7 +200,7 @@ func main() {
 
 	app := &cli.App{
 		Name:    "go-ignore-cov",
-		Version: "0.2.0",
+		Version: "0.3.0",
 		Usage:   "Remove ignored code from codebase from a golang coverage output file",
 		Flags: []cli.Flag{
 			&cli.StringFlag{

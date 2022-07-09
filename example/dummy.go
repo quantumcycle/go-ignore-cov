@@ -8,9 +8,11 @@ import (
 
 //this package should have 100% code coverage if we remove the ignored statements
 func MaybeSayHello() {
-	fmt.Println("Maybe Maybe Maybe")
+	// coverage:ignore
 	if err, ok := hello.SayHello(); err != nil && ok {
 		// coverage:ignore
 		fmt.Println("BOOM")
 	}
+	// coverage:ignore
+  fmt.Println("OK")
 }
