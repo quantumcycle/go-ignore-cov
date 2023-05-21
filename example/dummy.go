@@ -3,7 +3,7 @@ package example
 import (
 	"fmt"
 
-	"github.com/hexira/go-ignore-cov/example/hello"
+	"github.com/quantumcycle/go-ignore-cov/example/hello"
 )
 
 //this package should have 100% code coverage if we remove the ignored statements
@@ -14,5 +14,5 @@ func MaybeSayHello() {
 		fmt.Println("BOOM")
 	}
 	// coverage:ignore
-  fmt.Println("OK")
+	fmt.Println("OK")
 }

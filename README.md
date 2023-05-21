@@ -19,7 +19,7 @@ What if you want to start using this on a existing codebase, how can you enforce
 ## Installation
 
 ```
-go install github.com/hexira/go-ignore-cov@latest
+go install github.com/quantumcycle/go-ignore-cov@latest
 ```
 
 ## Using `go-ignore-cov`
@@ -27,9 +27,10 @@ go install github.com/hexira/go-ignore-cov@latest
 This is a CLI tool with just a few options.
 
 Here is an example of how to run this from your module root folder:
+
 ```
 # Run test and output coverage
-go test -coverprofile coverage.out -covermode count -coverpkg=./... -v ./... 
+go test -coverprofile coverage.out -covermode count -coverpkg=./... -v ./...
 
 # Filter coverage output from source code ignore instructions
 go-ignore-cov --file coverage.out
@@ -40,11 +41,10 @@ go tool cover -func=coverage.out
 
 The options for the command line are:
 
-* `--file`: the coverage input file
-* `--output`: the output coverage file. If absent, the value of `--file` is used
-* `--root`: the root folder of the go module project used to produce the coverage output. By default, the working directory is used
-* `--verbose`: verbose output
-
+- `--file`: the coverage input file
+- `--output`: the output coverage file. If absent, the value of `--file` is used
+- `--root`: the root folder of the go module project used to produce the coverage output. By default, the working directory is used
+- `--verbose`: verbose output
 
 ## The source code
 
@@ -59,11 +59,12 @@ This is the default instruction. You add a comment like this: `//coverage:ignore
 2   callout := fmt.Sprintf("Hello %s", name)
 3   if name == "World" {
 4     fmt.Println("Seriously?!")
-5     return 
+5     return
 5   }
 6   fmt.Println(callout)
 7 }
 ```
+
 there is one block starting at "{" on line 1, and ending before "{" on line 3. The next block is starting on "{" on line 3 and ending at "}" on line 5. And finally,
 there is a block for the line 6.
 
@@ -75,7 +76,7 @@ The default ignore instruction will ignore the whole block in which it was decla
 3   //coverage:ignore
 4   if name == "World" {
 5     fmt.Println("Seriously?!")
-6     return 
+6     return
 7   }
 8   fmt.Println(callout)
 9 }
@@ -87,7 +88,7 @@ The default ignore instruction will ignore the whole block in which it was decla
 3   callout := fmt.Sprintf("Hello %s", name)
 4   if name == "World" {
 5     fmt.Println("Seriously?!")
-6     return 
+6     return
 7   }
 8   fmt.Println(callout)
 9 }
