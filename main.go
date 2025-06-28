@@ -410,6 +410,11 @@ func main() {
 				Aliases: []string{"v"},
 				Usage:   "verbose output",
 			},
+			&cli.BoolFlag{
+				Name:    "ignore-empty",
+				Aliases: []string{"e"},
+				Usage:   "ignore empty functions (functions with 0 statements)",
+			},
 			&cli.StringFlag{
 				Name:    "exclude-globs",
 				Aliases: []string{"g"},
@@ -499,10 +504,38 @@ func main() {
 			}
 
 			exclusionDuration := time.Since(exclusionStart)
+			
+			// Handle empty functions if flag is enabled
+			ignoreEmpty := c.Bool("ignore-empty")
+			emptyFunctions := 0
+			if ignoreEmpty {
+				emptyStart := time.Now()
+				for _, profile := range profiles {
+					for i, block := range profile.Blocks {
+						if block.NumStmt == 0 {
+							profile.Blocks[i].NumStmt = 1
+							profile.Blocks[i].Count = 1
+							emptyFunctions++
+							if verbose {
+								fmt.Printf("Setting empty function to covered for %s:%d.%d\n", 
+									profile.FileName, block.StartLine, block.StartCol)
+							}
+						}
+					}
+				}
+				if verbose {
+					fmt.Printf("Empty function processing completed in %v, processed %d empty functions\n", 
+						time.Since(emptyStart), emptyFunctions)
+				}
+			}
+			
 			if verbose {
 				fmt.Printf("Coverage exclusion processing completed in %v\n", exclusionDuration)
 				fmt.Printf("  - %d profiles excluded by comments\n", commentExclusions)
 				fmt.Printf("  - %d profiles excluded by patterns\n", patternExclusions)
+				if ignoreEmpty {
+					fmt.Printf("  - %d empty functions marked as covered\n", emptyFunctions)
+				}
 			}
 
 			output := c.String("output")
