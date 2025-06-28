@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/urfave/cli/v2"
 	"golang.org/x/tools/cover"
@@ -131,7 +132,9 @@ func readInstructionsFromSourceFile(path string) ([]Instruction, error) {
 	return instructions, nil
 }
 
-func readIgnoreCoverageFromSourceDir(root string) ([]IgnoreCoverage, error) {
+func readIgnoreCoverageFromSourceDir(root string, verbose bool) ([]IgnoreCoverage, error) {
+	// Time the file tree walking
+	walkStart := time.Now()
 	var goFiles []string
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -145,6 +148,14 @@ func readIgnoreCoverageFromSourceDir(root string) ([]IgnoreCoverage, error) {
 	if err != nil {
 		return nil, err
 	}
+	walkDuration := time.Since(walkStart)
+
+	if verbose {
+		fmt.Printf("File tree walk completed in %v, found %d .go files\n", walkDuration, len(goFiles))
+	}
+
+	// Time the source file processing
+	processStart := time.Now()
 
 	// Process files in parallel
 	numWorkers := runtime.NumCPU()
@@ -199,6 +210,12 @@ func readIgnoreCoverageFromSourceDir(root string) ([]IgnoreCoverage, error) {
 		ignores = append(ignores, ignore)
 	}
 
+	processDuration := time.Since(processStart)
+	if verbose {
+		fmt.Printf("Source file processing completed in %v, found %d files with ignore comments\n",
+			processDuration, len(ignores))
+	}
+
 	return ignores, nil
 }
 
@@ -211,13 +228,49 @@ func resolveFile(file string) (string, error) {
 	return filepath.Join(pkg.Dir, file), nil
 }
 
-func findIgnoreCoveragesByFile(ignoreCoverages []IgnoreCoverage, file string) (*IgnoreCoverage, bool) {
-	for _, ignore := range ignoreCoverages {
-		if ignore.Filepath == file {
-			return &ignore, true
-		}
+func buildPackagePathCache(profiles []*cover.Profile, verbose bool) (map[string]string, error) {
+	cacheStart := time.Now()
+	packageCache := make(map[string]string)
+
+	// Get unique package directories
+	uniqueDirs := make(map[string]bool)
+	for _, profile := range profiles {
+		dir, _ := filepath.Split(profile.FileName)
+		uniqueDirs[dir] = true
 	}
-	return nil, false
+
+	// Resolve each unique directory once
+	for dir := range uniqueDirs {
+		pkg, err := build.Import(dir, ".", build.FindOnly)
+		if err != nil {
+			return nil, err
+		}
+		packageCache[dir] = pkg.Dir
+	}
+
+	if verbose {
+		fmt.Printf("Package cache built in %v for %d unique directories\n",
+			time.Since(cacheStart), len(packageCache))
+	}
+
+	return packageCache, nil
+}
+
+func resolveFileWithCache(packagePath string, packageCache map[string]string) string {
+	dir, file := filepath.Split(packagePath)
+	if pkgDir, found := packageCache[dir]; found {
+		return filepath.Join(pkgDir, file)
+	}
+	// Fallback (shouldn't happen if cache is complete)
+	return packagePath
+}
+
+func buildIgnoreCoverageMap(ignoreCoverages []IgnoreCoverage) map[string]*IgnoreCoverage {
+	ignoreMap := make(map[string]*IgnoreCoverage, len(ignoreCoverages))
+	for i := range ignoreCoverages {
+		ignoreMap[ignoreCoverages[i].Filepath] = &ignoreCoverages[i]
+	}
+	return ignoreMap
 }
 
 func updateProfileFromIgnoreCoverages(profile *cover.Profile, ignore *IgnoreCoverage, verbose bool) {
@@ -275,6 +328,7 @@ func main() {
 		},
 		Action: func(c *cli.Context) error {
 
+			start := time.Now()
 			verbose := c.Bool("verbose")
 
 			root := c.String("root")
@@ -285,7 +339,7 @@ func main() {
 				}
 			}
 
-			ignoreCoverages, err := readIgnoreCoverageFromSourceDir(root)
+			ignoreCoverages, err := readIgnoreCoverageFromSourceDir(root, verbose)
 			if err != nil {
 				return err
 			}
@@ -297,16 +351,30 @@ func main() {
 				return err
 			}
 
-			for _, profile := range profiles {
-				pgkPath := profile.FileName
-				file, err := resolveFile(pgkPath)
-				if err != nil {
-					return err
-				}
+			packageCache, err := buildPackagePathCache(profiles, verbose)
+			if err != nil {
+				return err
+			}
 
-				if ignore, found := findIgnoreCoveragesByFile(ignoreCoverages, file); found {
+			ignoreMap := buildIgnoreCoverageMap(ignoreCoverages)
+
+			exclusionStart := time.Now()
+			processedProfiles := 0
+
+			for _, profile := range profiles {
+				// Use cached package resolution - no expensive build.Import calls
+				file := resolveFileWithCache(profile.FileName, packageCache)
+
+				if ignore, found := ignoreMap[file]; found {
 					updateProfileFromIgnoreCoverages(profile, ignore, verbose)
+					processedProfiles++
 				}
+			}
+
+			exclusionDuration := time.Since(exclusionStart)
+			if verbose {
+				fmt.Printf("Coverage exclusion processing completed in %v, processed %d profiles\n",
+					exclusionDuration, processedProfiles)
 			}
 
 			output := c.String("output")
@@ -325,6 +393,7 @@ func main() {
 
 			writeProfiles(profiles, outputFile)
 
+			fmt.Printf("Finished in %v\n", time.Since(start))
 			return nil
 		},
 	}
