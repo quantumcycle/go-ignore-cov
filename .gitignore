@@ -2,3 +2,4 @@ coverage.out
 go-ignore-cov
 .vscode
 lcov.info
+.idea
