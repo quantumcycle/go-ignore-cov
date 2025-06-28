@@ -46,6 +46,7 @@ The options for the command line are:
 - `--root`: the root folder of the go module project used to produce the coverage output. By default, the working directory is used
 - `--exclude-globs`: comma-separated glob patterns to exclude files/directories (e.g., `**/test/**,**/*_gen.go`)
 - `--exclude-regex`: comma-separated regex patterns to exclude files/directories (e.g., `/test/,.*_gen\.go$`)
+- `--ignore-empty`: ignore empty functions (functions with 0 statements)
 - `--verbose`: verbose output
 
 ## Pattern-based exclusions
@@ -116,6 +117,54 @@ go-ignore-cov --file coverage.out \
 # Display coverage
 go tool cover -func=coverage.out
 ```
+
+## Empty function handling
+
+Empty functions (functions with 0 statements) often appear in codebases and can negatively impact coverage percentages. The `--ignore-empty` flag helps handle these cases by marking them as covered.
+
+### What are empty functions?
+
+Empty functions typically include:
+- **Placeholder functions**: Functions that are defined but not yet implemented
+- **Interface placeholders**: Empty implementations of interface methods
+
+### Using `--ignore-empty`
+
+```bash
+# Mark empty functions as covered
+go-ignore-cov --file coverage.out --ignore-empty
+
+# Combine with other options
+go-ignore-cov --file coverage.out --ignore-empty --exclude-globs="**/test/**"
+```
+
+### What it does
+
+The flag transforms empty function coverage from:
+```
+package/file.go:10.15,12.2 0 0  // 0 statements, 0 count = 0% coverage
+```
+
+To:
+```
+package/file.go:10.15,12.2 1 1  // 1 statement, 1 count = 100% coverage
+```
+
+### Example workflow
+
+```bash
+# Run tests and generate coverage
+go test -coverprofile coverage.out ./...
+
+# Process coverage with empty function handling
+go-ignore-cov --file coverage.out --ignore-empty \
+  --exclude-globs="**/test/**,**/*fakes/**"
+
+# Display coverage (empty functions now show as covered)
+go tool cover -func=coverage.out
+```
+
+**Note**: This only affects empty functions that appear in the coverage file. Functions that don't generate coverage blocks (like some `func _()` compile-time assertions) may still show as 0% in `go tool cover` output, as this is a limitation of Go's coverage tooling.
 
 ## The source code
 

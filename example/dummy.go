@@ -47,3 +47,7 @@ func NotCoveredButIgnored() {
 	//coverage:ignore
 	fmt.Println("This function is not covered")
 }
+
+func emptyFunction() {
+	//nothing to do, noop
+}
