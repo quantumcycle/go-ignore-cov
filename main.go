@@ -386,7 +386,7 @@ func main() {
 
 	app := &cli.App{
 		Name:    "go-ignore-cov",
-		Version: "0.5.0",
+		Version: "0.6.0",
 		Usage:   "Mark ignored code as covered in a golang coverage output file",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
@@ -504,7 +504,7 @@ func main() {
 			}
 
 			exclusionDuration := time.Since(exclusionStart)
-			
+
 			// Handle empty functions if flag is enabled
 			ignoreEmpty := c.Bool("ignore-empty")
 			emptyFunctions := 0
@@ -517,18 +517,18 @@ func main() {
 							profile.Blocks[i].Count = 1
 							emptyFunctions++
 							if verbose {
-								fmt.Printf("Setting empty function to covered for %s:%d.%d\n", 
+								fmt.Printf("Setting empty function to covered for %s:%d.%d\n",
 									profile.FileName, block.StartLine, block.StartCol)
 							}
 						}
 					}
 				}
 				if verbose {
-					fmt.Printf("Empty function processing completed in %v, processed %d empty functions\n", 
+					fmt.Printf("Empty function processing completed in %v, processed %d empty functions\n",
 						time.Since(emptyStart), emptyFunctions)
 				}
 			}
-			
+
 			if verbose {
 				fmt.Printf("Coverage exclusion processing completed in %v\n", exclusionDuration)
 				fmt.Printf("  - %d profiles excluded by comments\n", commentExclusions)
