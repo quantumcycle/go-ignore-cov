@@ -386,7 +386,7 @@ func main() {
 
 	app := &cli.App{
 		Name:    "go-ignore-cov",
-		Version: "0.6.0",
+		Version: "0.6.1",
 		Usage:   "Mark ignored code as covered in a golang coverage output file",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
@@ -554,7 +554,9 @@ func main() {
 
 			writeProfiles(profiles, outputFile)
 
-			fmt.Printf("Finished in %v\n", time.Since(start))
+			if verbose {
+				fmt.Printf("Finished in %v\n", time.Since(start))
+			}
 			return nil
 		},
 	}
