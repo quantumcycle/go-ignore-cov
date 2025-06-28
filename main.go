@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/tools/cover"
 )
@@ -76,6 +77,23 @@ func (ig IgnoreFile) UpdateProfile(profile *cover.Profile, verbose bool) {
 	}
 	if verbose {
 		fmt.Printf("Setting coverage blocks [all] count to 1 for %s\n", profile.FileName)
+	}
+}
+
+type PatternIgnore struct {
+	MatchedBy string
+}
+
+func (pi PatternIgnore) UpdateProfile(profile *cover.Profile, verbose bool) {
+	//all blocks in that file, set count to at least 1 to simulate coverage
+	for i := range profile.Blocks {
+		if profile.Blocks[i].Count == 0 {
+			profile.Blocks[i].Count = 1
+		}
+	}
+	if verbose {
+		fmt.Printf("Setting coverage blocks [all] count to 1 for %s (matched by %s)\n",
+			profile.FileName, pi.MatchedBy)
 	}
 }
 
@@ -219,15 +237,6 @@ func readIgnoreCoverageFromSourceDir(root string, verbose bool) ([]IgnoreCoverag
 	return ignores, nil
 }
 
-func resolveFile(file string) (string, error) {
-	dir, file := filepath.Split(file)
-	pkg, err := build.Import(dir, ".", build.FindOnly)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(pkg.Dir, file), nil
-}
-
 func buildPackagePathCache(profiles []*cover.Profile, verbose bool) (map[string]string, error) {
 	cacheStart := time.Now()
 	packageCache := make(map[string]string)
@@ -243,9 +252,14 @@ func buildPackagePathCache(profiles []*cover.Profile, verbose bool) (map[string]
 	for dir := range uniqueDirs {
 		pkg, err := build.Import(dir, ".", build.FindOnly)
 		if err != nil {
-			return nil, err
+			if verbose {
+				fmt.Printf("Warning: Could not resolve package %s, using original path\n", dir)
+			}
+			// Fallback: use the original directory path
+			packageCache[dir] = dir
+		} else {
+			packageCache[dir] = pkg.Dir
 		}
-		packageCache[dir] = pkg.Dir
 	}
 
 	if verbose {
@@ -271,6 +285,77 @@ func buildIgnoreCoverageMap(ignoreCoverages []IgnoreCoverage) map[string]*Ignore
 		ignoreMap[ignoreCoverages[i].Filepath] = &ignoreCoverages[i]
 	}
 	return ignoreMap
+}
+
+type PatternMatcher struct {
+	GlobPatterns  []string
+	RegexPatterns []*regexp.Regexp
+	Root          string
+}
+
+func buildPatternMatcher(globPatterns, regexPatterns, root string) (*PatternMatcher, error) {
+	matcher := &PatternMatcher{Root: root}
+
+	// Parse glob patterns
+	if globPatterns != "" {
+		for _, pattern := range strings.Split(globPatterns, ",") {
+			pattern = strings.TrimSpace(pattern)
+			if pattern != "" {
+				matcher.GlobPatterns = append(matcher.GlobPatterns, pattern)
+			}
+		}
+	}
+
+	// Parse and compile regex patterns
+	if regexPatterns != "" {
+		for _, pattern := range strings.Split(regexPatterns, ",") {
+			pattern = strings.TrimSpace(pattern)
+			if pattern != "" {
+				regex, err := regexp.Compile(pattern)
+				if err != nil {
+					return nil, fmt.Errorf("invalid regex pattern '%s': %v", pattern, err)
+				}
+				matcher.RegexPatterns = append(matcher.RegexPatterns, regex)
+			}
+		}
+	}
+
+	return matcher, nil
+}
+
+func (pm *PatternMatcher) MatchesFile(absolutePath string) (string, bool) {
+	// Get relative path from root for glob matching
+	relPath, err := filepath.Rel(pm.Root, absolutePath)
+	if err != nil {
+		relPath = absolutePath
+	}
+
+	// Check glob patterns using doublestar library
+	for _, pattern := range pm.GlobPatterns {
+		// Try matching against relative path
+		matched, err := doublestar.Match(pattern, relPath)
+		if err == nil && matched {
+			return fmt.Sprintf("glob pattern '%s'", pattern), true
+		}
+
+		// Also try matching against absolute path for some patterns
+		matched, err = doublestar.Match(pattern, absolutePath)
+		if err == nil && matched {
+			return fmt.Sprintf("glob pattern '%s'", pattern), true
+		}
+	}
+
+	// Check regex patterns
+	for _, regex := range pm.RegexPatterns {
+		if regex.MatchString(absolutePath) {
+			return fmt.Sprintf("regex pattern '%s'", regex.String()), true
+		}
+		if regex.MatchString(relPath) {
+			return fmt.Sprintf("regex pattern '%s'", regex.String()), true
+		}
+	}
+
+	return "", false
 }
 
 func updateProfileFromIgnoreCoverages(profile *cover.Profile, ignore *IgnoreCoverage, verbose bool) {
@@ -325,6 +410,16 @@ func main() {
 				Aliases: []string{"v"},
 				Usage:   "verbose output",
 			},
+			&cli.StringFlag{
+				Name:    "exclude-globs",
+				Aliases: []string{"g"},
+				Usage:   "comma-separated glob patterns to exclude (e.g., \"**/test/**,**/*_gen.go\")",
+			},
+			&cli.StringFlag{
+				Name:    "exclude-regex",
+				Aliases: []string{"x"},
+				Usage:   "comma-separated regex patterns to exclude (e.g., \"/test/,.*_gen\\.go$\")",
+			},
 		},
 		Action: func(c *cli.Context) error {
 
@@ -336,6 +431,23 @@ func main() {
 				root, _ = os.Getwd()
 				if verbose {
 					fmt.Printf("Module root not defined, using %s working directory as root\n", root)
+				}
+			}
+
+			// Build pattern matcher from CLI flags
+			globPatterns := c.String("exclude-globs")
+			regexPatterns := c.String("exclude-regex")
+
+			var patternMatcher *PatternMatcher
+			if globPatterns != "" || regexPatterns != "" {
+				var err error
+				patternMatcher, err = buildPatternMatcher(globPatterns, regexPatterns, root)
+				if err != nil {
+					return fmt.Errorf("error building pattern matcher: %v", err)
+				}
+				if verbose {
+					fmt.Printf("Pattern matcher configured with %d glob patterns and %d regex patterns\n",
+						len(patternMatcher.GlobPatterns), len(patternMatcher.RegexPatterns))
 				}
 			}
 
@@ -359,22 +471,38 @@ func main() {
 			ignoreMap := buildIgnoreCoverageMap(ignoreCoverages)
 
 			exclusionStart := time.Now()
-			processedProfiles := 0
+			commentExclusions := 0
+			patternExclusions := 0
 
 			for _, profile := range profiles {
 				// Use cached package resolution - no expensive build.Import calls
 				file := resolveFileWithCache(profile.FileName, packageCache)
 
+				// First check pattern-based ignores (they take precedence over comments)
+				if patternMatcher != nil {
+					if matchedBy, matches := patternMatcher.MatchesFile(file); matches {
+						patternIgnore := &IgnoreCoverage{
+							Filepath:     file,
+							Instructions: []Instruction{PatternIgnore{MatchedBy: matchedBy}},
+						}
+						updateProfileFromIgnoreCoverages(profile, patternIgnore, verbose)
+						patternExclusions++
+						continue
+					}
+				}
+
+				// Then check comment-based ignores (fallback if no pattern matches)
 				if ignore, found := ignoreMap[file]; found {
 					updateProfileFromIgnoreCoverages(profile, ignore, verbose)
-					processedProfiles++
+					commentExclusions++
 				}
 			}
 
 			exclusionDuration := time.Since(exclusionStart)
 			if verbose {
-				fmt.Printf("Coverage exclusion processing completed in %v, processed %d profiles\n",
-					exclusionDuration, processedProfiles)
+				fmt.Printf("Coverage exclusion processing completed in %v\n", exclusionDuration)
+				fmt.Printf("  - %d profiles excluded by comments\n", commentExclusions)
+				fmt.Printf("  - %d profiles excluded by patterns\n", patternExclusions)
 			}
 
 			output := c.String("output")

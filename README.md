@@ -44,11 +44,82 @@ The options for the command line are:
 - `--file`: the coverage input file
 - `--output`: the output coverage file. If absent, the value of `--file` is used
 - `--root`: the root folder of the go module project used to produce the coverage output. By default, the working directory is used
+- `--exclude-globs`: comma-separated glob patterns to exclude files/directories (e.g., `**/test/**,**/*_gen.go`)
+- `--exclude-regex`: comma-separated regex patterns to exclude files/directories (e.g., `/test/,.*_gen\.go$`)
 - `--verbose`: verbose output
+
+## Pattern-based exclusions
+
+In addition to source code comments, you can exclude files and directories using pattern matching. This is especially useful for generated code, test files, and vendor directories that you cannot modify to add ignore comments.
+
+### Glob patterns (`--exclude-globs`)
+
+Use glob patterns with doublestar (`**`) support for flexible file and directory matching:
+
+```bash
+# Exclude test directories and generated files
+go-ignore-cov --file coverage.out --exclude-globs="**/test/**,**/*_gen.go,**/*_generated.go"
+
+# Exclude common patterns
+go-ignore-cov --file coverage.out --exclude-globs="**/vendor/**,**/mock/**,**/*fakes/**"
+
+# Exclude specific file patterns
+go-ignore-cov --file coverage.out --exclude-globs="**/*_test.go,**/testdata/**,**/*.pb.go"
+```
+
+**Glob pattern examples:**
+- `**/test/**` - Any directory named "test" at any depth
+- `**/*fakes/**` - Any directory ending with "fakes" (e.g., metricfakes, usecasefakes)
+- `**/*_gen.go` - Any file ending with "_gen.go" at any depth
+- `**/vendor/**` - Vendor directories and all their contents
+- `cmd/**` - Everything under the cmd directory
+
+### Regex patterns (`--exclude-regex`)
+
+Use regular expressions for more complex pattern matching:
+
+```bash
+# Exclude using regex patterns
+go-ignore-cov --file coverage.out --exclude-regex="/test/,.*_generated\.go$,/mock/"
+
+# Complex patterns
+go-ignore-cov --file coverage.out --exclude-regex="/(test|mock|vendor)/,.*\.(pb|gen)\.go$"
+```
+
+**Regex pattern examples:**
+- `/test/` - Any path containing "/test/"
+- `.*_gen\.go$` - Files ending with "_gen.go"
+- `/(mock|test|vendor)/` - Paths containing mock, test, or vendor directories
+- `.*\.(pb|gen)\.go$` - Files ending with ".pb.go" or ".gen.go"
+
+### Combining patterns
+
+You can use both glob and regex patterns together:
+
+```bash
+go-ignore-cov --file coverage.out \
+  --exclude-globs="**/test/**,**/*fakes/**" \
+  --exclude-regex="/vendor/,.*_generated\.go$"
+```
+
+### Full workflow example
+
+```bash
+# Run test and output coverage
+go test -coverprofile coverage.out -covermode count -coverpkg=./... -v ./...
+
+# Filter coverage with pattern exclusions
+go-ignore-cov --file coverage.out \
+  --exclude-globs="**/test/**,**/*_gen.go,**/*fakes/**" \
+  --exclude-regex="/mock/,.*\.pb\.go$"
+
+# Display coverage
+go tool cover -func=coverage.out
+```
 
 ## The source code
 
-There is 2 instructions that you can add to your source code.
+There are 2 instructions that you can add to your source code.
 
 ### ignoring a code block
 
