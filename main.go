@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"go/build"
 	"io"
@@ -10,8 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/urfave/cli/v2"
 	"golang.org/x/tools/cover"
@@ -21,6 +23,11 @@ const (
 	InstructionBlock   = "block"
 	InstructionFile    = "file"
 	DefaultInstruction = InstructionBlock
+)
+
+var (
+	// Compile regex once at package level for performance
+	coverageIgnoreRegex = regexp.MustCompile(`//\s?coverage:ignore(\s([a-z]+))?$`)
 )
 
 type IgnoreCoverage struct {
@@ -34,50 +41,46 @@ type Instruction interface {
 
 type IgnoreBlock struct {
 	Line int
-	Col int
+	Col  int
 }
 
 func (ig IgnoreBlock) UpdateProfile(profile *cover.Profile, verbose bool) {
-	newBlocks := []cover.ProfileBlock{}
-	igPos,_ := strconv.Atoi(fmt.Sprintf("%d%05d",ig.Line, ig.Col))
-	for _, block := range profile.Blocks {
-		blockStart, _ := strconv.Atoi(fmt.Sprintf("%d%05d",block.StartLine, block.StartCol))
-		blockEnd, _ := strconv.Atoi(fmt.Sprintf("%d%05d",block.EndLine, block.EndCol))
+	// Use arithmetic instead of string formatting for better performance
+	//this is equivalent to igPos,_ := strconv.Atoi(fmt.Sprintf("%d%05d",ig.Line, ig.Col))
+	igPos := ig.Line*100000 + ig.Col
+	for i, block := range profile.Blocks {
+		blockStart := block.StartLine*100000 + block.StartCol
+		blockEnd := block.EndLine*100000 + block.EndCol
 		if igPos >= blockStart && igPos < blockEnd {
-			//whole block inside the ignore zone, just ignore it
-			if verbose {
-				fmt.Printf("Removing coverage block [%d.%d] => [%d.%d] for %s\n",
-					block.StartLine, block.StartCol, block.EndLine, block.EndCol, profile.FileName)
+			//whole block inside the ignore zone, set count to at least 1 to simulate coverage
+			if block.Count == 0 {
+				profile.Blocks[i].Count = 1
+				if verbose {
+					fmt.Printf("Setting coverage block [%d.%d] => [%d.%d] count to 1 for %s\n",
+						block.StartLine, block.StartCol, block.EndLine, block.EndCol, profile.FileName)
+				}
 			}
-			continue
 		}
-		newBlocks = append(newBlocks, block)
 	}
-	profile.Blocks = newBlocks
 }
 
 type IgnoreFile struct{}
 
 func (ig IgnoreFile) UpdateProfile(profile *cover.Profile, verbose bool) {
-	profile.Blocks = []cover.ProfileBlock{}
-	if verbose {
-		fmt.Printf("Removing all coverage blocks for %s\n", profile.FileName)
-	}
-}
-
-func find(strs []string, str string) int {
-	for i, s := range strs {
-		if s == str {
-			return i
+	//all blocks in that file, set count to at least 1 to simulate coverage
+	for i := range profile.Blocks {
+		if profile.Blocks[i].Count == 0 {
+			profile.Blocks[i].Count = 1
 		}
 	}
-	return -1
+	if verbose {
+		fmt.Printf("Setting coverage blocks [all] count to 1 for %s\n", profile.FileName)
+	}
 }
 
 func getInstructionFromLine(line string) (string, bool) {
 	if strings.Contains(line, "//coverage:ignore") || strings.Contains(line, "// coverage:ignore") {
-		re := regexp.MustCompile(`//\s?coverage:ignore(\s([a-z]+))?$`)
-		matches := re.FindStringSubmatch(line)
+		matches := coverageIgnoreRegex.FindStringSubmatch(line)
 		if len(matches) == 3 {
 			if matches[2] != "" {
 				return matches[2], true
@@ -113,7 +116,7 @@ func readInstructionsFromSourceFile(path string) ([]Instruction, error) {
 				colStart := len(lineTxt) - len(strings.TrimLeft(lineTxt, "\t ")) + 1
 				instructions = append(instructions, IgnoreBlock{
 					Line: lineNumber,
-					Col: colStart,
+					Col:  colStart,
 				})
 				pendingBlockInstruction = ""
 			}
@@ -129,28 +132,73 @@ func readInstructionsFromSourceFile(path string) ([]Instruction, error) {
 }
 
 func readIgnoreCoverageFromSourceDir(root string) ([]IgnoreCoverage, error) {
-	ignores := []IgnoreCoverage{}
-	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	var goFiles []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !info.IsDir() && strings.HasSuffix(info.Name(), ".go") {
-			instructions, err := readInstructionsFromSourceFile(path)
-			if err != nil {
-				return err
-			}
-			if len(instructions) > 0 {
-				ignores = append(ignores, IgnoreCoverage{
-					Filepath:     path,
-					Instructions: instructions,
-				})
-			}
+		if !d.IsDir() && strings.HasSuffix(d.Name(), ".go") {
+			goFiles = append(goFiles, path)
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+
+	// Process files in parallel
+	numWorkers := runtime.NumCPU()
+	jobs := make(chan string, len(goFiles))
+	results := make(chan IgnoreCoverage, len(goFiles))
+	var wg sync.WaitGroup
+
+	// Start workers
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for path := range jobs {
+				// Quick check if file contains coverage:ignore before full parsing
+				content, err := os.ReadFile(path)
+				if err != nil {
+					continue
+				}
+				if !bytes.Contains(content, []byte("coverage:ignore")) {
+					continue
+				}
+
+				instructions, err := readInstructionsFromSourceFile(path)
+				if err != nil {
+					continue
+				}
+				if len(instructions) > 0 {
+					results <- IgnoreCoverage{
+						Filepath:     path,
+						Instructions: instructions,
+					}
+				}
+			}
+		}()
+	}
+
+	// Send jobs to waiting workers
+	for _, file := range goFiles {
+		jobs <- file
+	}
+	close(jobs)
+
+	// Wait for workers to finish
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results
+	var ignores []IgnoreCoverage
+	for ignore := range results {
+		ignores = append(ignores, ignore)
+	}
+
 	return ignores, nil
 }
 
@@ -200,8 +248,8 @@ func main() {
 
 	app := &cli.App{
 		Name:    "go-ignore-cov",
-		Version: "0.3.0",
-		Usage:   "Remove ignored code from codebase from a golang coverage output file",
+		Version: "0.5.0",
+		Usage:   "Mark ignored code as covered in a golang coverage output file",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:     "file",
