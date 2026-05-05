@@ -9,7 +9,3 @@ func SayHello() (error, bool) {
 	return nil, true
 }
 
-func SaySomethingElse() {
-	//coverage:ignore
-	fmt.Println("Something else")
-}

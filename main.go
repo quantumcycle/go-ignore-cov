@@ -19,6 +19,7 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/tools/cover"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -27,10 +28,14 @@ const (
 	DefaultInstruction = InstructionBlock
 )
 
-var (
-	// Compile regex once at package level for performance
-	coverageIgnoreRegex = regexp.MustCompile(`//\s?coverage:ignore(\s([a-z]+))?$`)
-)
+type ReasonConfig struct {
+	Reasons []ReasonEntry `yaml:"reasons"`
+}
+
+type ReasonEntry struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+}
 
 type IgnoreCoverage struct {
 	Filepath     string
@@ -42,8 +47,10 @@ type Instruction interface {
 }
 
 type IgnoreBlock struct {
-	Line int
-	Col  int
+	Line    int
+	Col     int
+	Reason  string
+	SrcLine int
 }
 
 func (ig IgnoreBlock) UpdateProfile(profile *cover.Profile, verbose bool) {
@@ -54,7 +61,6 @@ func (ig IgnoreBlock) UpdateProfile(profile *cover.Profile, verbose bool) {
 		blockStart := block.StartLine*100000 + block.StartCol
 		blockEnd := block.EndLine*100000 + block.EndCol
 		if igPos >= blockStart && igPos < blockEnd {
-			//whole block inside the ignore zone, set count to at least 1 to simulate coverage
 			if block.Count == 0 {
 				profile.Blocks[i].Count = 1
 				if verbose {
@@ -66,10 +72,12 @@ func (ig IgnoreBlock) UpdateProfile(profile *cover.Profile, verbose bool) {
 	}
 }
 
-type IgnoreFile struct{}
+type IgnoreFile struct {
+	Reason  string
+	SrcLine int
+}
 
 func (ig IgnoreFile) UpdateProfile(profile *cover.Profile, verbose bool) {
-	//all blocks in that file, set count to at least 1 to simulate coverage
 	for i := range profile.Blocks {
 		if profile.Blocks[i].Count == 0 {
 			profile.Blocks[i].Count = 1
@@ -85,7 +93,6 @@ type PatternIgnore struct {
 }
 
 func (pi PatternIgnore) UpdateProfile(profile *cover.Profile, verbose bool) {
-	//all blocks in that file, set count to at least 1 to simulate coverage
 	for i := range profile.Blocks {
 		if profile.Blocks[i].Count == 0 {
 			profile.Blocks[i].Count = 1
@@ -97,17 +104,30 @@ func (pi PatternIgnore) UpdateProfile(profile *cover.Profile, verbose bool) {
 	}
 }
 
-func getInstructionFromLine(line string) (string, bool) {
-	if strings.Contains(line, "//coverage:ignore") || strings.Contains(line, "// coverage:ignore") {
-		matches := coverageIgnoreRegex.FindStringSubmatch(line)
-		if len(matches) == 3 {
-			if matches[2] != "" {
-				return matches[2], true
-			}
-			return DefaultInstruction, true
+// getInstructionFromLine parses a coverage:ignore directive from a source line.
+// Returns instruction ("block" or "file"), optional reason, and whether a directive was found.
+func getInstructionFromLine(line string) (instruction string, reason string, ok bool) {
+	if !strings.Contains(line, "coverage:ignore") {
+		return "", "", false
+	}
+	idx := strings.Index(line, "coverage:ignore")
+	// Verify preceded by // with optional whitespace
+	prefix := strings.TrimRight(line[:idx], " \t")
+	if !strings.HasSuffix(prefix, "//") {
+		return "", "", false
+	}
+	tail := strings.TrimSpace(line[idx+len("coverage:ignore"):])
+	tokens := strings.Fields(tail)
+	instruction = InstructionBlock
+	for _, tok := range tokens {
+		switch {
+		case tok == "file":
+			instruction = InstructionFile
+		case strings.HasPrefix(tok, "reason="):
+			reason = strings.TrimPrefix(tok, "reason=")
 		}
 	}
-	return "", false
+	return instruction, reason, true
 }
 
 func readInstructionsFromSourceFile(path string) ([]Instruction, error) {
@@ -119,25 +139,33 @@ func readInstructionsFromSourceFile(path string) ([]Instruction, error) {
 	defer source.Close()
 	scanner := bufio.NewScanner(source)
 	lineNumber := 1
-	pendingBlockInstruction := ""
+	pendingBlock := false
+	var pendingReason string
+	var pendingSrcLine int
 	for scanner.Scan() {
 		lineTxt := scanner.Text()
-		if instruction, ok := getInstructionFromLine(lineTxt); ok {
+		if instruction, reason, ok := getInstructionFromLine(lineTxt); ok {
 			if instruction == InstructionFile {
-				instructions = append(instructions, IgnoreFile{})
+				instructions = append(instructions, IgnoreFile{Reason: reason, SrcLine: lineNumber})
 			} else if instruction == InstructionBlock {
-				pendingBlockInstruction = instruction
+				pendingBlock = true
+				pendingReason = reason
+				pendingSrcLine = lineNumber
 			} else {
 				return nil, fmt.Errorf("Unexpected ignore instruction [%s] at line %d in file [%s]", instruction, lineNumber, path)
 			}
 		} else {
-			if pendingBlockInstruction != "" {
+			if pendingBlock {
 				colStart := len(lineTxt) - len(strings.TrimLeft(lineTxt, "\t ")) + 1
 				instructions = append(instructions, IgnoreBlock{
-					Line: lineNumber,
-					Col:  colStart,
+					Line:    lineNumber,
+					Col:     colStart,
+					Reason:  pendingReason,
+					SrcLine: pendingSrcLine,
 				})
-				pendingBlockInstruction = ""
+				pendingBlock = false
+				pendingReason = ""
+				pendingSrcLine = 0
 			}
 		}
 		lineNumber++
@@ -151,7 +179,6 @@ func readInstructionsFromSourceFile(path string) ([]Instruction, error) {
 }
 
 func readIgnoreCoverageFromSourceDir(root string, verbose bool) ([]IgnoreCoverage, error) {
-	// Time the file tree walking
 	walkStart := time.Now()
 	var goFiles []string
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -172,22 +199,18 @@ func readIgnoreCoverageFromSourceDir(root string, verbose bool) ([]IgnoreCoverag
 		fmt.Printf("File tree walk completed in %v, found %d .go files\n", walkDuration, len(goFiles))
 	}
 
-	// Time the source file processing
 	processStart := time.Now()
 
-	// Process files in parallel
 	numWorkers := runtime.NumCPU()
 	jobs := make(chan string, len(goFiles))
 	results := make(chan IgnoreCoverage, len(goFiles))
 	var wg sync.WaitGroup
 
-	// Start workers
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for path := range jobs {
-				// Quick check if file contains coverage:ignore before full parsing
 				content, err := os.ReadFile(path)
 				if err != nil {
 					continue
@@ -210,19 +233,16 @@ func readIgnoreCoverageFromSourceDir(root string, verbose bool) ([]IgnoreCoverag
 		}()
 	}
 
-	// Send jobs to waiting workers
 	for _, file := range goFiles {
 		jobs <- file
 	}
 	close(jobs)
 
-	// Wait for workers to finish
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
-	// Collect results
 	var ignores []IgnoreCoverage
 	for ignore := range results {
 		ignores = append(ignores, ignore)
@@ -241,21 +261,18 @@ func buildPackagePathCache(profiles []*cover.Profile, verbose bool) (map[string]
 	cacheStart := time.Now()
 	packageCache := make(map[string]string)
 
-	// Get unique package directories
 	uniqueDirs := make(map[string]bool)
 	for _, profile := range profiles {
 		dir, _ := filepath.Split(profile.FileName)
 		uniqueDirs[dir] = true
 	}
 
-	// Resolve each unique directory once
 	for dir := range uniqueDirs {
 		pkg, err := build.Import(dir, ".", build.FindOnly)
 		if err != nil {
 			if verbose {
 				fmt.Printf("Warning: Could not resolve package %s, using original path\n", dir)
 			}
-			// Fallback: use the original directory path
 			packageCache[dir] = dir
 		} else {
 			packageCache[dir] = pkg.Dir
@@ -275,7 +292,6 @@ func resolveFileWithCache(packagePath string, packageCache map[string]string) st
 	if pkgDir, found := packageCache[dir]; found {
 		return filepath.Join(pkgDir, file)
 	}
-	// Fallback (shouldn't happen if cache is complete)
 	return packagePath
 }
 
@@ -296,7 +312,6 @@ type PatternMatcher struct {
 func buildPatternMatcher(globPatterns, regexPatterns, root string) (*PatternMatcher, error) {
 	matcher := &PatternMatcher{Root: root}
 
-	// Parse glob patterns
 	if globPatterns != "" {
 		for _, pattern := range strings.Split(globPatterns, ",") {
 			pattern = strings.TrimSpace(pattern)
@@ -306,7 +321,6 @@ func buildPatternMatcher(globPatterns, regexPatterns, root string) (*PatternMatc
 		}
 	}
 
-	// Parse and compile regex patterns
 	if regexPatterns != "" {
 		for _, pattern := range strings.Split(regexPatterns, ",") {
 			pattern = strings.TrimSpace(pattern)
@@ -324,28 +338,23 @@ func buildPatternMatcher(globPatterns, regexPatterns, root string) (*PatternMatc
 }
 
 func (pm *PatternMatcher) MatchesFile(absolutePath string) (string, bool) {
-	// Get relative path from root for glob matching
 	relPath, err := filepath.Rel(pm.Root, absolutePath)
 	if err != nil {
 		relPath = absolutePath
 	}
 
-	// Check glob patterns using doublestar library
 	for _, pattern := range pm.GlobPatterns {
-		// Try matching against relative path
 		matched, err := doublestar.Match(pattern, relPath)
 		if err == nil && matched {
 			return fmt.Sprintf("glob pattern '%s'", pattern), true
 		}
 
-		// Also try matching against absolute path for some patterns
 		matched, err = doublestar.Match(pattern, absolutePath)
 		if err == nil && matched {
 			return fmt.Sprintf("glob pattern '%s'", pattern), true
 		}
 	}
 
-	// Check regex patterns
 	for _, regex := range pm.RegexPatterns {
 		if regex.MatchString(absolutePath) {
 			return fmt.Sprintf("regex pattern '%s'", regex.String()), true
@@ -375,6 +384,39 @@ func writeProfiles(profiles []*cover.Profile, w io.Writer) {
 				block.NumStmt, block.Count)))
 		}
 	}
+}
+
+type reasonViolation struct {
+	filepath string
+	line     int
+	message  string
+}
+
+func validateReasons(ignoreCoverages []IgnoreCoverage, validReasons map[string]bool, reasonNames []string, requireReason bool) []reasonViolation {
+	var violations []reasonViolation
+	for _, ic := range ignoreCoverages {
+		for _, instr := range ic.Instructions {
+			var reason string
+			var srcLine int
+			switch v := instr.(type) {
+			case IgnoreBlock:
+				reason = v.Reason
+				srcLine = v.SrcLine
+			case IgnoreFile:
+				reason = v.Reason
+				srcLine = v.SrcLine
+			default:
+				continue
+			}
+			if requireReason && reason == "" {
+				violations = append(violations, reasonViolation{ic.Filepath, srcLine, "coverage:ignore missing required reason tag"})
+			} else if reason != "" && !validReasons[reason] {
+				msg := fmt.Sprintf("coverage:ignore has unknown reason %q (valid: %s)", reason, strings.Join(reasonNames, ", "))
+				violations = append(violations, reasonViolation{ic.Filepath, srcLine, msg})
+			}
+		}
+	}
+	return violations
 }
 
 func main() {
@@ -425,6 +467,15 @@ func main() {
 				Aliases: []string{"x"},
 				Usage:   "comma-separated regex patterns to exclude (e.g., \"/test/,.*_gen\\.go$\")",
 			},
+			&cli.StringFlag{
+				Name:    "config",
+				Aliases: []string{"c"},
+				Usage:   "path to reasons config YAML file (default: .coverage-reasons.yml in root)",
+			},
+			&cli.BoolFlag{
+				Name:  "require-reason",
+				Usage: "fail if any //coverage:ignore directive is missing a reason tag",
+			},
 		},
 		Action: func(c *cli.Context) error {
 
@@ -438,8 +489,8 @@ func main() {
 					fmt.Printf("Module root not defined, using %s working directory as root\n", root)
 				}
 			}
+			root, _ = filepath.Abs(root)
 
-			// Build pattern matcher from CLI flags
 			globPatterns := c.String("exclude-globs")
 			regexPatterns := c.String("exclude-regex")
 
@@ -461,7 +512,50 @@ func main() {
 				return err
 			}
 
-			//scan code, find ignored lines
+			// Reason validation
+			configFlag := c.String("config")
+			requireReason := c.Bool("require-reason")
+			configPath := configFlag
+			if configPath == "" {
+				configPath = filepath.Join(root, ".coverage-reasons.yml")
+			}
+
+			var validReasons map[string]bool
+			var reasonNames []string
+			configLoaded := false
+			if _, statErr := os.Stat(configPath); statErr == nil {
+				data, err := os.ReadFile(configPath)
+				if err != nil {
+					return fmt.Errorf("reading config: %v", err)
+				}
+				var cfg ReasonConfig
+				if err := yaml.Unmarshal(data, &cfg); err != nil {
+					return fmt.Errorf("parsing config: %v", err)
+				}
+				validReasons = make(map[string]bool, len(cfg.Reasons))
+				for _, r := range cfg.Reasons {
+					validReasons[r.Name] = true
+					reasonNames = append(reasonNames, r.Name)
+				}
+				configLoaded = true
+			} else if configFlag != "" {
+				return fmt.Errorf("config file not found: %s", configPath)
+			}
+
+			if requireReason && !configLoaded {
+				return fmt.Errorf("--require-reason requires a config file (use --config or create .coverage-reasons.yml)")
+			}
+
+			if configLoaded {
+				violations := validateReasons(ignoreCoverages, validReasons, reasonNames, requireReason)
+				if len(violations) > 0 {
+					for _, v := range violations {
+						fmt.Fprintf(os.Stderr, "%s:%d: %s\n", v.filepath, v.line, v.message)
+					}
+					return cli.Exit("", 1)
+				}
+			}
+
 			coverageFile := c.String("file")
 			profiles, err := cover.ParseProfiles(coverageFile)
 			if err != nil {
@@ -480,10 +574,8 @@ func main() {
 			patternExclusions := 0
 
 			for _, profile := range profiles {
-				// Use cached package resolution - no expensive build.Import calls
 				file := resolveFileWithCache(profile.FileName, packageCache)
 
-				// First check pattern-based ignores (they take precedence over comments)
 				if patternMatcher != nil {
 					if matchedBy, matches := patternMatcher.MatchesFile(file); matches {
 						patternIgnore := &IgnoreCoverage{
@@ -496,7 +588,6 @@ func main() {
 					}
 				}
 
-				// Then check comment-based ignores (fallback if no pattern matches)
 				if ignore, found := ignoreMap[file]; found {
 					updateProfileFromIgnoreCoverages(profile, ignore, verbose)
 					commentExclusions++
@@ -505,7 +596,6 @@ func main() {
 
 			exclusionDuration := time.Since(exclusionStart)
 
-			// Handle empty functions if flag is enabled
 			ignoreEmpty := c.Bool("ignore-empty")
 			emptyFunctions := 0
 			if ignoreEmpty {
