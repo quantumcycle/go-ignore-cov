@@ -1,0 +1,9 @@
+reasons:
+  - name: unreachable
+    description: "Dead code that cannot be reached by construction — typically a panic(\"unreachable\") after an exhaustive switch or as a default branch that type safety makes impossible to hit"
+  - name: impossible-error
+    description: "Error return from an operation that cannot fail given its inputs, e.g. json.Marshal on a struct with only JSON-serializable fields"
+  - name: generated
+    description: "Code produced by a generator (mockery, oapi-codegen, protoc, etc.) interleaved with hand-written code and not excludable via glob"
+  - name: bootstrap
+    description: "Entry points and init functions (main, init) that wire dependencies and are not unit-testable in isolation"

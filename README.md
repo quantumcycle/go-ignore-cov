@@ -22,6 +22,22 @@ What if you want to start using this on a existing codebase, how can you enforce
 go install github.com/quantumcycle/go-ignore-cov@latest
 ```
 
+## Running the example
+
+The `example/` directory contains a small but realistic Go package that demonstrates all directive forms.
+
+```bash
+# Generate coverage
+go test -coverprofile coverage.out -covermode count -coverpkg=./example/... ./example/...
+
+# Apply ignore directives, validate reasons against .coverage-reasons.yml
+go run . --file coverage.out --root ./example --require-reason
+
+# Inspect the result in html
+go tool cover -html=coverage.out -o coverage.html
+open coverage.html
+```
+
 ## Using `go-ignore-cov`
 
 This is a CLI tool with just a few options.
@@ -165,6 +181,53 @@ go tool cover -func=coverage.out
 ```
 
 **Note**: This only affects empty functions that appear in the coverage file. Functions that don't generate coverage blocks (like some `func _()` compile-time assertions) may still show as 0% in `go tool cover` output, as this is a limitation of Go's coverage tooling.
+
+## Reason enforcement
+
+You can require that every `//coverage:ignore` directive carries a documented reason. This makes exclusions machine-readable and reviewable.
+
+### Config file
+
+Create `.coverage-reasons.yml` at your project root:
+
+```yaml
+reasons:
+  - name: unreachable
+    description: "Dead code that cannot be reached by construction — typically a panic(\"unreachable\") after an exhaustive switch"
+  - name: impossible-error
+    description: "Error return from an operation that cannot fail given its inputs"
+  - name: generated
+    description: "Code produced by a generator interleaved with hand-written code and not excludable via glob"
+  - name: bootstrap
+    description: "Entry points and init functions (main, init) that wire dependencies and are not unit-testable in isolation"
+  - name: interface-guard
+    description: "Compile-time interface satisfaction checks: var _ Foo = (*Bar)(nil)"
+```
+
+The tool ships with no built-in reasons — all reasons are project-defined.
+
+### Directive syntax
+
+```go
+//coverage:ignore reason=unreachable
+//coverage:ignore file reason=generated
+```
+
+### Flags
+
+- `--config, -c`: path to reasons config YAML file (default: `.coverage-reasons.yml` in root)
+- `--require-reason`: fail if any `//coverage:ignore` directive is missing a `reason=` tag
+
+When a config file is present (explicit or auto-detected), any directive using an unknown reason name is an error. The `--require-reason` flag additionally makes a missing reason an error. Both produce output like:
+
+```
+<filepath>:<line>: coverage:ignore has unknown reason "foo" (valid: unreachable, impossible-error, generated)
+<filepath>:<line>: coverage:ignore missing required reason tag
+```
+
+All violations are reported before exiting non-zero.
+
+**Backward compatibility**: if `.coverage-reasons.yml` does not exist and `--config` is not set, the tool behaves exactly as before — reason tags are parsed and stored but never validated.
 
 ## The source code
 
