@@ -24,6 +24,11 @@ func TestGetInstructionFromLine(t *testing.T) {
 		{"// some other comment", "", "", false},
 		{"", "", "", false},
 		{`s := "coverage:ignore"`, "", "", false},
+		// // embedded in a string literal must not be treated as a directive.
+		{"var re = regexp.MustCompile(`//coverage:ignore`)", "", "", false},
+		{`var re = regexp.MustCompile(` + "`" + `\S.*//coverage:ignore` + "`" + `)`, "", "", false},
+		{`msg := "//coverage:ignore must have reason"`, "", "", false},
+		{`msg := fmt.Sprintf("//coverage:ignore has unknown reason=%q", r)`, "", "", false},
 	}
 	for _, tt := range tests {
 		instruction, reason, ok := getInstructionFromLine(tt.line)
@@ -160,6 +165,35 @@ func TestValidateReasonsRequireReason(t *testing.T) {
 	}
 	if violations[0].line != 9 {
 		t.Errorf("expected violation at line 9, got %d", violations[0].line)
+	}
+}
+
+func TestFilterIgnoreCoveragesExcludesMatchedPaths(t *testing.T) {
+	pm := &PatternMatcher{
+		GlobPatterns: []string{"tools/**"},
+		Root:         "/repo",
+	}
+	ics := []IgnoreCoverage{
+		{Filepath: "/repo/tools/qualitygate/foo.go"},
+		{Filepath: "/repo/service/domain/bar.go"},
+	}
+	got := filterIgnoreCoverages(ics, pm)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 after filtering, got %d", len(got))
+	}
+	if got[0].Filepath != "/repo/service/domain/bar.go" {
+		t.Errorf("unexpected filepath: %s", got[0].Filepath)
+	}
+}
+
+func TestFilterIgnoreCoveragesNilMatcher(t *testing.T) {
+	ics := []IgnoreCoverage{
+		{Filepath: "/repo/tools/foo.go"},
+		{Filepath: "/repo/service/bar.go"},
+	}
+	got := filterIgnoreCoverages(ics, nil)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 (nil matcher keeps all), got %d", len(got))
 	}
 }
 
