@@ -116,6 +116,16 @@ func getInstructionFromLine(line string) (instruction string, reason string, ok 
 	if !strings.HasSuffix(prefix, "//") {
 		return "", "", false
 	}
+	// Reject // embedded inside a string literal: a real comment's // is
+	// either at the start of the line or preceded by a space/tab.
+	// e.g. `regexp.MustCompile(`//coverage:ignore`)` has '`' before //,
+	// and `"//coverage:ignore"` has '"' before // — both are false positives.
+	if slashPos := len(prefix) - 2; slashPos > 0 {
+		ch := prefix[slashPos-1]
+		if ch != ' ' && ch != '\t' {
+			return "", "", false
+		}
+	}
 	tail := strings.TrimSpace(line[idx+len("coverage:ignore"):])
 	tokens := strings.Fields(tail)
 	instruction = InstructionBlock
@@ -392,6 +402,19 @@ type reasonViolation struct {
 	message  string
 }
 
+func filterIgnoreCoverages(ics []IgnoreCoverage, pm *PatternMatcher) []IgnoreCoverage {
+	if pm == nil {
+		return ics
+	}
+	var filtered []IgnoreCoverage
+	for _, ic := range ics {
+		if _, matches := pm.MatchesFile(ic.Filepath); !matches {
+			filtered = append(filtered, ic)
+		}
+	}
+	return filtered
+}
+
 func validateReasons(ignoreCoverages []IgnoreCoverage, validReasons map[string]bool, reasonNames []string, requireReason bool) []reasonViolation {
 	var violations []reasonViolation
 	for _, ic := range ignoreCoverages {
@@ -547,7 +570,7 @@ func main() {
 			}
 
 			if configLoaded {
-				violations := validateReasons(ignoreCoverages, validReasons, reasonNames, requireReason)
+				violations := validateReasons(filterIgnoreCoverages(ignoreCoverages, patternMatcher), validReasons, reasonNames, requireReason)
 				if len(violations) > 0 {
 					for _, v := range violations {
 						fmt.Fprintf(os.Stderr, "%s:%d: %s\n", v.filepath, v.line, v.message)
