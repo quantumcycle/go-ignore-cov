@@ -59,7 +59,7 @@ The options for the command line are:
 
 - `--file`: the coverage input file
 - `--output`: the output coverage file. If absent, the value of `--file` is used
-- `--root`: the root folder of the go module project used to produce the coverage output. By default, the working directory is used
+- `--root`: the root folder of the go module project used to produce the coverage output. By default, the working directory is used. Files that belong to the module declared in `root/go.mod` are located directly under `root`; anything else is resolved through the Go toolchain, which is much slower
 - `--exclude-globs`: comma-separated glob patterns to exclude files/directories (e.g., `**/test/**,**/*_gen.go`)
 - `--exclude-regex`: comma-separated regex patterns to exclude files/directories (e.g., `/test/,.*_gen\.go$`)
 - `--ignore-empty`: ignore empty functions (functions with 0 statements)

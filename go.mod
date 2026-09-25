@@ -5,7 +5,8 @@ go 1.18
 require (
 	github.com/bmatcuk/doublestar/v4 v4.8.1
 	github.com/urfave/cli/v2 v2.10.3
-	golang.org/x/tools v0.1.11
+	golang.org/x/mod v0.8.0
+	golang.org/x/tools v0.1.12
 	gopkg.in/yaml.v3 v3.0.1
 )
 

@@ -2,7 +2,10 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
+
+	"golang.org/x/tools/cover"
 )
 
 func TestGetInstructionFromLine(t *testing.T) {
@@ -217,5 +220,83 @@ func TestValidateReasonsNoRequireNoConfig(t *testing.T) {
 	violations := validateReasons(ic, valid, names, false)
 	if len(violations) != 0 {
 		t.Errorf("expected 0 violations, got %d", len(violations))
+	}
+}
+
+func TestMainModuleDir(t *testing.T) {
+	root := t.TempDir()
+	tests := []struct {
+		dir    string
+		want   string
+		mapped bool
+	}{
+		{"example.com/m/pkg/a/", filepath.Join(root, "pkg", "a"), true},
+		{"example.com/m/", root, true},
+		{"example.com/m", root, true},
+		{"example.com/mother/pkg/", "", false},
+		{"github.com/other/dep/", "", false},
+	}
+	for _, tt := range tests {
+		got, mapped := mainModuleDir(tt.dir, "example.com/m", root)
+		if mapped != tt.mapped || got != tt.want {
+			t.Errorf("mainModuleDir(%q) = %q, %v; want %q, %v", tt.dir, got, mapped, tt.want, tt.mapped)
+		}
+	}
+	if got, mapped := mainModuleDir("example.com/m/pkg/", "", root); mapped || got != "" {
+		t.Errorf("without a module path nothing should map, got %q, %v", got, mapped)
+	}
+}
+
+func TestMainModulePath(t *testing.T) {
+	root := t.TempDir()
+	if got := mainModulePath(root); got != "" {
+		t.Errorf("no go.mod: want empty module path, got %q", got)
+	}
+	cases := map[string]string{
+		"comment line above":      "// a comment\n\nmodule example.com/m\n\ngo 1.18\n",
+		"trailing comment":        "module example.com/m // the module\n",
+		"tab separator":           "module\texample.com/m\n",
+		"quoted path":             "module \"example.com/m\"\n",
+		"crlf":                    "module example.com/m\r\ngo 1.18\r\n",
+		"unknown directive first": "toolchain go1.22.0\nmodule example.com/m\n",
+	}
+	for name, content := range cases {
+		if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := mainModulePath(root); got != "example.com/m" {
+			t.Errorf("%s: want example.com/m, got %q", name, got)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("go 1.18\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := mainModulePath(root); got != "" {
+		t.Errorf("go.mod without module line: want empty module path, got %q", got)
+	}
+}
+
+func TestBuildPackagePathCacheMapsMainModuleWithoutLookup(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/m\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profiles := []*cover.Profile{
+		{FileName: "example.com/m/pkg/a/file.go"},
+		{FileName: "example.com/m/pkg/a/other.go"},
+		{FileName: "example.com/m/main.go"},
+	}
+	cache, err := buildPackagePathCache(profiles, root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cache["example.com/m/pkg/a/"]; got != filepath.Join(root, "pkg", "a") {
+		t.Errorf("pkg/a mapped to %q", got)
+	}
+	if got := cache["example.com/m/"]; got != root {
+		t.Errorf("module root mapped to %q", got)
+	}
+	if got := resolveFileWithCache("example.com/m/pkg/a/file.go", cache); got != filepath.Join(root, "pkg", "a", "file.go") {
+		t.Errorf("file resolved to %q", got)
 	}
 }
