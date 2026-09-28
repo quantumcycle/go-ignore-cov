@@ -18,6 +18,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/urfave/cli/v2"
+	"golang.org/x/mod/modfile"
 	"golang.org/x/tools/cover"
 	"gopkg.in/yaml.v3"
 )
@@ -267,22 +268,44 @@ func readIgnoreCoverageFromSourceDir(root string, verbose bool) ([]IgnoreCoverag
 	return ignores, nil
 }
 
-func buildPackagePathCache(profiles []*cover.Profile, verbose bool) (map[string]string, error) {
+func mainModulePath(root string) string {
+	content, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		return ""
+	}
+	f, err := modfile.ParseLax("go.mod", content, nil)
+	if err != nil || f.Module == nil {
+		return ""
+	}
+	return f.Module.Mod.Path
+}
+
+func buildPackagePathCache(profiles []*cover.Profile, root string, verbose bool) (map[string]string, error) {
 	cacheStart := time.Now()
 	packageCache := make(map[string]string)
+	modulePath := mainModulePath(root)
 
+	// Get unique package directories
 	uniqueDirs := make(map[string]bool)
 	for _, profile := range profiles {
 		dir, _ := filepath.Split(profile.FileName)
 		uniqueDirs[dir] = true
 	}
 
+	mapped, imported := 0, 0
 	for dir := range uniqueDirs {
+		if pkgDir, ok := mainModuleDir(dir, modulePath, root); ok {
+			packageCache[dir] = pkgDir
+			mapped++
+			continue
+		}
+		imported++
 		pkg, err := build.Import(dir, ".", build.FindOnly)
 		if err != nil {
 			if verbose {
 				fmt.Printf("Warning: Could not resolve package %s, using original path\n", dir)
 			}
+			// Fallback: use the original directory path
 			packageCache[dir] = dir
 		} else {
 			packageCache[dir] = pkg.Dir
@@ -290,11 +313,25 @@ func buildPackagePathCache(profiles []*cover.Profile, verbose bool) (map[string]
 	}
 
 	if verbose {
-		fmt.Printf("Package cache built in %v for %d unique directories\n",
-			time.Since(cacheStart), len(packageCache))
+		fmt.Printf("Package cache built in %v for %d unique directories (%d in the main module, %d through build.Import)\n",
+			time.Since(cacheStart), len(packageCache), mapped, imported)
 	}
 
 	return packageCache, nil
+}
+
+func mainModuleDir(dir, modulePath, root string) (string, bool) {
+	if modulePath == "" {
+		return "", false
+	}
+	trimmed := strings.TrimSuffix(dir, "/")
+	if trimmed == modulePath {
+		return root, true
+	}
+	if !strings.HasPrefix(trimmed, modulePath+"/") {
+		return "", false
+	}
+	return filepath.Join(root, filepath.FromSlash(strings.TrimPrefix(trimmed, modulePath+"/"))), true
 }
 
 func resolveFileWithCache(packagePath string, packageCache map[string]string) string {
@@ -585,7 +622,7 @@ func main() {
 				return err
 			}
 
-			packageCache, err := buildPackagePathCache(profiles, verbose)
+			packageCache, err := buildPackagePathCache(profiles, root, verbose)
 			if err != nil {
 				return err
 			}
